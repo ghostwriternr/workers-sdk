@@ -41,6 +41,8 @@ interface EnvironmentEntry {
 }
 
 const environments = new Map<string, EnvironmentEntry>();
+const environmentEntries = new Set<EnvironmentEntry>();
+let managedRegistryPreparationQueue = Promise.resolve();
 
 const logger = {
 	debug: console.debug,
@@ -74,6 +76,7 @@ export function prepareProjectContainers(
 			preparation: prepare(config, configPath),
 		};
 		environments.set(key, entry);
+		environmentEntries.add(entry);
 	}
 	entry.references++;
 
@@ -125,6 +128,8 @@ function getEnvironmentKey(
 		config.exports,
 		config.dev.enable_containers,
 		config.dev.container_engine,
+		config.account_id,
+		getCloudflareApiBaseUrl(config),
 		getDockerPath(),
 		process.env.WRANGLER_DOCKER_HOST,
 		process.env.DOCKER_HOST,
@@ -147,17 +152,23 @@ async function prepare(
 		return undefined;
 	}
 
-	configureManagedRegistry(config, plan.containerOptions);
-	const prepared = await prepareLocalContainers({
-		dockerPath: plan.dockerPath,
-		containerOptions: plan.containerOptions,
-		logger,
-		complianceConfig: config,
-		dockerUnavailable: {
-			operation: "running tests",
-			hint: "If these tests do not exercise container instances, set dev.enable_containers to false in your Worker configuration.",
-		},
-	});
+	const prepareImages = () =>
+		prepareLocalContainers({
+			dockerPath: plan.dockerPath,
+			containerOptions: plan.containerOptions,
+			logger,
+			complianceConfig: config,
+			dockerUnavailable: {
+				operation: "running tests",
+				hint: "If these tests do not exercise container instances, set dev.enable_containers to false in your Worker configuration.",
+			},
+		});
+	const prepared = usesManagedRegistry(config, plan.containerOptions)
+		? await queueManagedRegistryPreparation(() => {
+				configureManagedRegistry(config);
+				return prepareImages();
+			})
+		: await prepareImages();
 
 	return {
 		containerBuildId: plan.containerBuildId,
@@ -202,6 +213,7 @@ async function releaseEnvironment(
 	// retried because they own no resources.
 	if (environment === undefined) {
 		environments.delete(key);
+		environmentEntries.delete(entry);
 	}
 }
 
@@ -222,24 +234,24 @@ async function invalidateEnvironment(
 }
 
 async function disposeEnvironment(entry: EnvironmentEntry): Promise<void> {
+	environmentEntries.delete(entry);
 	const environment = await entry.preparation.catch(() => undefined);
 	await environment?.prepared?.dispose();
 }
 
-function configureManagedRegistry(
+function usesManagedRegistry(
 	config: Config,
 	containerOptions: readonly ContainerDevOptions[]
-): void {
+): boolean {
 	const registry = getCloudflareContainerRegistry(config);
-	const usesManagedRegistry = containerOptions.some(
+	return containerOptions.some(
 		(option) =>
 			"image_uri" in option &&
 			new URL(`http://${option.image_uri}`).hostname === registry
 	);
-	if (!usesManagedRegistry) {
-		return;
-	}
+}
 
+function configureManagedRegistry(config: Config): void {
 	const apiToken = process.env.CLOUDFLARE_API_TOKEN;
 	const accountId = config.account_id ?? process.env.CLOUDFLARE_ACCOUNT_ID;
 	if (!apiToken || !accountId) {
@@ -259,12 +271,22 @@ function configureManagedRegistry(
 	);
 }
 
+function queueManagedRegistryPreparation<T>(
+	callback: () => Promise<T>
+): Promise<T> {
+	const preparation = managedRegistryPreparationQueue.then(callback, callback);
+	managedRegistryPreparationQueue = preparation.then(
+		() => undefined,
+		() => undefined
+	);
+	return preparation;
+}
+
 /** Disposes all prepared environments when the Vitest process closes. */
 export async function disposeAllProjectContainers(): Promise<void> {
-	const pending = [...environments.values()].map(
-		({ preparation }) => preparation
-	);
+	const pending = [...environmentEntries].map(({ preparation }) => preparation);
 	environments.clear();
+	environmentEntries.clear();
 	const results = await Promise.allSettled(pending);
 	await Promise.all(
 		results.map((result) =>

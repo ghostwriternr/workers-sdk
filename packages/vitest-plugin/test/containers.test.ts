@@ -1,4 +1,5 @@
 import {
+	configureOpenAPIForContainerPull,
 	createLocalContainerPlan,
 	prepareLocalContainers,
 } from "@cloudflare/containers-shared";
@@ -22,6 +23,7 @@ describe("project container environments", () => {
 	afterEach(async () => {
 		await disposeAllProjectContainers();
 		vi.clearAllMocks();
+		vi.unstubAllEnvs();
 	});
 
 	it("does not prepare images for an inactive plan", async ({ expect }) => {
@@ -189,6 +191,45 @@ describe("project container environments", () => {
 
 		expect(createLocalContainerPlan).toHaveBeenCalledTimes(2);
 		expect(prepareLocalContainers).toHaveBeenCalledTimes(2);
+		await second?.release();
+	});
+
+	it("serializes managed-registry preparation", async ({ expect }) => {
+		vi.stubEnv("CLOUDFLARE_API_TOKEN", "token");
+		vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "account");
+		vi.mocked(createLocalContainerPlan).mockReturnValue({
+			containerBuildId: "build-id",
+			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
+			dockerPath: "docker",
+			containerOptions: [
+				{
+					class_name: "Container",
+					image_uri: "registry.cloudflare.com/image:latest",
+					image_tag: "cloudflare-dev/container:build-id",
+				},
+			],
+		});
+		let activePreparations = 0;
+		let maximumActivePreparations = 0;
+		vi.mocked(prepareLocalContainers).mockImplementation(async () => {
+			activePreparations++;
+			maximumActivePreparations = Math.max(
+				maximumActivePreparations,
+				activePreparations
+			);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			activePreparations--;
+			return { dockerPath: "docker", imageTags: new Set(), dispose: vi.fn() };
+		});
+
+		const [first, second] = await Promise.all([
+			prepareProjectContainers(config, "/project-a/wrangler.jsonc"),
+			prepareProjectContainers(config, "/project-b/wrangler.jsonc"),
+		]);
+
+		expect(maximumActivePreparations).toBe(1);
+		expect(configureOpenAPIForContainerPull).toHaveBeenCalledTimes(2);
+		await first?.release();
 		await second?.release();
 	});
 
