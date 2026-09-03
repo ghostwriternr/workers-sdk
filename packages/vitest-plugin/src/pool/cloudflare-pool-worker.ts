@@ -101,6 +101,7 @@ export class CloudflarePoolWorker implements PoolWorker {
 			if (configPlugin !== undefined) {
 				const api = configPlugin.api as WorkersConfigPluginAPI;
 				api.setMain(this.main);
+				api.setContainerWatch(this.parsedPoolOptions.containerWatch);
 			}
 
 			this.mf = await getProjectMiniflare(

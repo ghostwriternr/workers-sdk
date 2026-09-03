@@ -18,6 +18,7 @@ import {
 	getRelativeProjectPath,
 } from "./helpers";
 import { loadNewConfig, NEW_CONFIG_FILENAME } from "./new-config";
+import type { ProjectContainerEnvironment } from "./containers";
 import type {
 	RemoteBindingsLogger,
 	RemoteProxySessionData,
@@ -30,6 +31,7 @@ import type { ZodError } from "zod";
 
 export interface WorkersConfigPluginAPI {
 	setMain(newMain?: string): void;
+	setContainerWatch(watch?: ProjectContainerEnvironment["watch"]): void;
 }
 
 const ExperimentalNewConfigSchema = z.object({
@@ -134,6 +136,8 @@ export type WorkersPoolOptionsWithDefines = WorkersPoolOptions & {
 	containerEngine?: V4MiniflareOptions["containerEngine"];
 	/** Releases this pool worker's reference to its prepared container environment. */
 	releaseContainerEnvironment?: () => Promise<void>;
+	/** Local container inputs that invalidate image preparation in watch mode. */
+	containerWatch?: ProjectContainerEnvironment["watch"];
 	/**
 	 * Details of the configuration file these options were resolved from. Set
 	 * while parsing; not a user-facing option. Undefined when the project
@@ -461,6 +465,7 @@ async function parseCustomPoolOptions(
 		);
 		options.containerEngine = containerEnvironment?.containerEngine;
 		options.releaseContainerEnvironment = containerEnvironment?.release;
+		options.containerWatch = containerEnvironment?.watch;
 
 		try {
 			const { workerOptions, externalWorkers, define, main } =
@@ -517,6 +522,7 @@ async function parseCustomPoolOptions(
 		} catch (error) {
 			await containerEnvironment?.release();
 			options.releaseContainerEnvironment = undefined;
+			options.containerWatch = undefined;
 			throw error;
 		}
 	}

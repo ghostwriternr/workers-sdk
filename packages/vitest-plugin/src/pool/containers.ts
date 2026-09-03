@@ -18,17 +18,25 @@ import type { Config } from "@cloudflare/workers-utils";
 export interface ProjectContainerEnvironment {
 	containerBuildId: string;
 	containerEngine: NonNullable<Config["dev"]["container_engine"]>;
+	watch: {
+		files: string[];
+		directories: string[];
+		invalidate(): void;
+	};
 	release(): Promise<void>;
 }
 
 interface SharedProjectContainerEnvironment {
 	containerBuildId: string;
 	containerEngine: NonNullable<Config["dev"]["container_engine"]>;
+	watchFiles: string[];
+	watchDirectories: string[];
 	prepared: PreparedLocalContainers | undefined;
 }
 
 interface EnvironmentEntry {
 	references: number;
+	invalidated: boolean;
 	preparation: Promise<SharedProjectContainerEnvironment | undefined>;
 }
 
@@ -57,11 +65,12 @@ export function prepareProjectContainers(
 	configPath: string,
 	environment?: string
 ): Promise<ProjectContainerEnvironment | undefined> {
-	const key = `${configPath}\0${environment ?? ""}`;
+	const key = getEnvironmentKey(config, configPath, environment);
 	let entry = environments.get(key);
 	if (entry === undefined) {
 		entry = {
 			references: 0,
+			invalidated: false,
 			preparation: prepare(config, configPath),
 		};
 		environments.set(key, entry);
@@ -78,6 +87,13 @@ export function prepareProjectContainers(
 			return {
 				containerBuildId: preparedEnvironment.containerBuildId,
 				containerEngine: preparedEnvironment.containerEngine,
+				watch: {
+					files: preparedEnvironment.watchFiles,
+					directories: preparedEnvironment.watchDirectories,
+					invalidate() {
+						void invalidateEnvironment(key, entry);
+					},
+				},
 				release() {
 					if (released) {
 						return Promise.resolve();
@@ -92,6 +108,27 @@ export function prepareProjectContainers(
 			throw error;
 		}
 	);
+}
+
+function getEnvironmentKey(
+	config: Config,
+	configPath: string,
+	environment?: string
+): string {
+	// A config reload may reuse the same path and environment in watch mode.
+	// Include every input that affects planning so it cannot reuse a stale image
+	// mapping or engine after the Worker configuration changes.
+	return JSON.stringify([
+		configPath,
+		environment,
+		config.containers,
+		config.exports,
+		config.dev.enable_containers,
+		config.dev.container_engine,
+		getDockerPath(),
+		process.env.WRANGLER_DOCKER_HOST,
+		process.env.DOCKER_HOST,
+	]);
 }
 
 async function prepare(
@@ -125,6 +162,20 @@ async function prepare(
 	return {
 		containerBuildId: plan.containerBuildId,
 		containerEngine: plan.containerEngine,
+		watchFiles: [
+			...new Set(
+				plan.containerOptions.flatMap((option) =>
+					"dockerfile" in option ? [option.dockerfile] : []
+				)
+			),
+		],
+		watchDirectories: [
+			...new Set(
+				plan.containerOptions.flatMap((option) =>
+					"dockerfile" in option ? [option.image_build_context] : []
+				)
+			),
+		],
 		prepared,
 	};
 }
@@ -134,7 +185,14 @@ async function releaseEnvironment(
 	entry: EnvironmentEntry
 ): Promise<void> {
 	entry.references--;
-	if (entry.references > 0 || environments.get(key) !== entry) {
+	if (entry.references > 0) {
+		return;
+	}
+	if (entry.invalidated) {
+		await disposeEnvironment(entry);
+		return;
+	}
+	if (environments.get(key) !== entry) {
 		return;
 	}
 
@@ -145,6 +203,27 @@ async function releaseEnvironment(
 	if (environment === undefined) {
 		environments.delete(key);
 	}
+}
+
+async function invalidateEnvironment(
+	key: string,
+	entry: EnvironmentEntry
+): Promise<void> {
+	if (entry.invalidated) {
+		return;
+	}
+	entry.invalidated = true;
+	if (environments.get(key) === entry) {
+		environments.delete(key);
+	}
+	if (entry.references === 0) {
+		await disposeEnvironment(entry);
+	}
+}
+
+async function disposeEnvironment(entry: EnvironmentEntry): Promise<void> {
+	const environment = await entry.preparation.catch(() => undefined);
+	await environment?.prepared?.dispose();
 }
 
 function configureManagedRegistry(

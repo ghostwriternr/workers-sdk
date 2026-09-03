@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { disposeAllProjectContainers } from "./containers";
 import { cloudflarePool } from "./pool";
-import type { WorkersPoolOptions } from "./config";
+import type { WorkersConfigPluginAPI, WorkersPoolOptions } from "./config";
 import type { ProvidedContext } from "vitest";
 import type { Vite, Vitest, VitestPluginContext } from "vitest/node";
 
@@ -74,18 +74,69 @@ export function cloudflareTest(
 	// don't trigger re-runs in all other projects, just the one that changed.
 	const uuid = crypto.randomUUID();
 	let main: string | undefined;
+	let project: VitestPluginContext["project"] | undefined;
+	let containerWatch: Parameters<
+		WorkersConfigPluginAPI["setContainerWatch"]
+	>[0];
+	const onContainerInputChange = (changedPath: string): void => {
+		const resolvedPath = path.resolve(changedPath);
+		if (
+			containerWatch?.files.includes(resolvedPath) ||
+			containerWatch?.directories.some((directory) => {
+				const relativePath = path.relative(directory, resolvedPath);
+				return relativePath !== "" && !relativePath.startsWith(`..${path.sep}`);
+			})
+		) {
+			containerWatch.invalidate();
+		}
+	};
 	return {
 		name: "@cloudflare/vitest-plugin",
 		api: {
-			setMain(newMain: string) {
+			setMain(newMain?: string) {
 				main = newMain;
+			},
+			setContainerWatch(
+				newWatch: Parameters<WorkersConfigPluginAPI["setContainerWatch"]>[0]
+			) {
+				containerWatch = newWatch;
+				if (newWatch === undefined || project === undefined) {
+					return;
+				}
+
+				// Build contexts are not part of Vite's module graph, so watch them
+				// explicitly and make changes rerun the suite. The synchronous watcher
+				// callback above invalidates preparation before Vitest's debounced rerun.
+				project.vitest.vite.watcher.add([
+					...newWatch.files,
+					...newWatch.directories,
+				]);
+				const triggers = project.vitest.config.forceRerunTriggers;
+				for (const file of newWatch.files) {
+					ensureArrayIncludes(triggers, [file.replaceAll(path.sep, "/")]);
+				}
+				for (const directory of newWatch.directories) {
+					ensureArrayIncludes(triggers, [
+						`${directory.replaceAll(path.sep, "/")}/**/*`,
+					]);
+				}
 			},
 		},
 		configureVitest(context: VitestPluginContext) {
+			project = context.project;
 			if (!cleanupRegisteredFor.has(context.project.vitest)) {
 				cleanupRegisteredFor.add(context.project.vitest);
 				context.project.vitest.onClose(disposeAllProjectContainers);
 			}
+			context.project.vitest.vite.watcher.on("change", onContainerInputChange);
+			context.project.vitest.vite.watcher.on("add", onContainerInputChange);
+			context.project.vitest.onClose(() => {
+				context.project.vitest.vite.watcher.off(
+					"change",
+					onContainerInputChange
+				);
+				context.project.vitest.vite.watcher.off("add", onContainerInputChange);
+			});
 			context.project.config.poolRunner = cloudflarePool(options);
 			context.project.config.pool = "cloudflare-pool";
 			context.project.config.snapshotEnvironment = "cloudflare:snapshot";

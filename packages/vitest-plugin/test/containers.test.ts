@@ -108,6 +108,90 @@ describe("project container environments", () => {
 		expect(disposeB).toHaveBeenCalledOnce();
 	});
 
+	it("rebuilds an invalidated environment after active leases release", async ({
+		expect,
+	}) => {
+		const dispose = vi.fn();
+		vi.mocked(createLocalContainerPlan).mockReturnValue({
+			containerBuildId: "build-id",
+			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
+			dockerPath: "docker",
+			containerOptions: [
+				{
+					class_name: "Container",
+					dockerfile: "/project/Dockerfile",
+					image_build_context: "/project",
+					image_tag: "cloudflare-dev/container:build-id",
+				},
+			],
+		});
+		vi.mocked(prepareLocalContainers).mockResolvedValue({
+			dockerPath: "docker",
+			imageTags: new Set(),
+			dispose,
+		});
+
+		const first = await prepareProjectContainers(
+			config,
+			"/project/wrangler.jsonc"
+		);
+		expect(first?.watch).toMatchObject({
+			files: ["/project/Dockerfile"],
+			directories: ["/project"],
+		});
+
+		first?.watch.invalidate();
+		expect(dispose).not.toHaveBeenCalled();
+		await first?.release();
+		expect(dispose).toHaveBeenCalledOnce();
+
+		const second = await prepareProjectContainers(
+			config,
+			"/project/wrangler.jsonc"
+		);
+		expect(createLocalContainerPlan).toHaveBeenCalledTimes(2);
+		expect(prepareLocalContainers).toHaveBeenCalledTimes(2);
+		await second?.release();
+	});
+
+	it("does not reuse preparation after container configuration changes", async ({
+		expect,
+	}) => {
+		vi.mocked(createLocalContainerPlan).mockReturnValue({
+			containerBuildId: "build-id",
+			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
+			dockerPath: "docker",
+			containerOptions: [],
+		});
+		vi.mocked(prepareLocalContainers).mockResolvedValue({
+			dockerPath: "docker",
+			imageTags: new Set(),
+			dispose: vi.fn(),
+		});
+		const firstConfig = {
+			...config,
+			containers: [{ class_name: "Container", image: "./Dockerfile" }],
+		} as Config;
+		const secondConfig = {
+			...config,
+			containers: [{ class_name: "Container", image: "registry/image:two" }],
+		} as Config;
+
+		const first = await prepareProjectContainers(
+			firstConfig,
+			"/project/wrangler.jsonc"
+		);
+		await first?.release();
+		const second = await prepareProjectContainers(
+			secondConfig,
+			"/project/wrangler.jsonc"
+		);
+
+		expect(createLocalContainerPlan).toHaveBeenCalledTimes(2);
+		expect(prepareLocalContainers).toHaveBeenCalledTimes(2);
+		await second?.release();
+	});
+
 	it("retries after preparation fails", async ({ expect }) => {
 		vi.mocked(createLocalContainerPlan).mockReturnValue({
 			containerBuildId: "build-id",
