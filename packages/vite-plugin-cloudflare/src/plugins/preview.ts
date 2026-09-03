@@ -1,8 +1,7 @@
 import {
 	getCloudflareContainerRegistry,
-	prepareContainerImagesForDev,
+	prepareLocalContainers,
 } from "@cloudflare/containers-shared";
-import { cleanupContainers } from "@cloudflare/containers-shared/src/utils";
 import { UserError } from "@cloudflare/workers-utils";
 import { buildPublicUrl, Request as MiniflareRequest } from "miniflare";
 import colors from "picocolors";
@@ -12,6 +11,7 @@ import { getPreviewMiniflareOptions } from "../miniflare-options";
 import { createPlugin, createRequestHandler } from "../utils";
 import { handleWebSocket } from "../websockets";
 import { rewriteLegacyMiniflarePath } from "./trigger-handlers";
+import type { PreparedLocalContainers } from "@cloudflare/containers-shared";
 
 let exitCallback = () => {};
 
@@ -23,6 +23,8 @@ process.on("exit", () => {
  * Plugin to provide core preview functionality
  */
 export const previewPlugin = createPlugin("preview", (ctx) => {
+	let preparedContainers: PreparedLocalContainers | undefined;
+
 	return {
 		async configurePreviewServer(vitePreviewServer) {
 			assertIsPreview(ctx);
@@ -31,7 +33,12 @@ export const previewPlugin = createPlugin("preview", (ctx) => {
 			const closePreviewServer =
 				vitePreviewServer.close.bind(vitePreviewServer);
 			vitePreviewServer.close = async () => {
-				await Promise.all([ctx.disposeMiniflare(), closePreviewServer()]);
+				try {
+					await Promise.all([ctx.disposeMiniflare(), closePreviewServer()]);
+				} finally {
+					await preparedContainers?.dispose();
+					preparedContainers = undefined;
+				}
 			};
 
 			const { miniflareOptions, containerTagToOptionsMap } =
@@ -96,24 +103,19 @@ export const previewPlugin = createPlugin("preview", (ctx) => {
 					configureContainerPull(accountId, apiToken, ctx.allWorkerConfigs[0]);
 				}
 
-				await prepareContainerImagesForDev({
-					dockerPath: getDockerPath(),
+				preparedContainers = await prepareLocalContainers({
+					dockerPath,
 					containerOptions: [...containerTagToOptionsMap.values()],
-					onContainerImagePreparationStart: () => {},
-					onContainerImagePreparationEnd: () => {},
 					logger: vitePreviewServer.config.logger,
 					complianceConfig: ctx.allWorkerConfigs[0],
 				});
 
-				const containerImageTags = new Set(containerTagToOptionsMap.keys());
 				vitePreviewServer.config.logger.info(
 					colors.dim(colors.yellow("\n⚡️ Containers successfully built.\n"))
 				);
 
 				exitCallback = () => {
-					if (containerImageTags.size) {
-						cleanupContainers(dockerPath, containerImageTags);
-					}
+					void preparedContainers?.dispose();
 				};
 			}
 

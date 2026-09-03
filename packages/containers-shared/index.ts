@@ -8,3 +8,4 @@ export * from "./src/inspect";
 export * from "./src/registry";
 export * from "./src/images";
 export * from "./src/dev-options";
+export * from "./src/local-containers";

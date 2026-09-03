@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { runInTempDir } from "@cloudflare/workers-utils/test-helpers";
 import { describe, test } from "vitest";
-import { createContainerDevOptions } from "../src/dev-options";
+import {
+	createContainerDevOptions,
+	createLocalContainerPlan,
+} from "../src/dev-options";
 import type { ContainerApp, Exports } from "@cloudflare/workers-utils";
 
 function container(props: Partial<ContainerApp>): ContainerApp {
@@ -89,5 +92,54 @@ describe("createContainerDevOptions", () => {
 				containerBuildId: "build-123",
 			})
 		).toEqual([]);
+	});
+});
+
+describe("createLocalContainerPlan", () => {
+	runInTempDir();
+
+	test("does not resolve an engine for inactive containers", ({ expect }) => {
+		expect(
+			createLocalContainerPlan({
+				containers: [container({ class_name: "Browser" })],
+				exports: {},
+				enableContainers: false,
+				dockerPath: "/missing/docker",
+			})
+		).toBeUndefined();
+	});
+
+	test("creates a plan with caller-provided runtime identifiers", ({
+		expect,
+	}) => {
+		const containerEngine = {
+			localDocker: { socketPath: "unix:///custom/docker.sock" },
+		};
+		const plan = createLocalContainerPlan({
+			containers: [
+				container({
+					class_name: "Browser",
+					image: "docker.io/example/browser:latest",
+				}),
+			],
+			exports: {},
+			enableContainers: true,
+			dockerPath: "docker",
+			containerBuildId: "build-123",
+			containerEngine,
+		});
+
+		expect(plan).toEqual({
+			containerBuildId: "build-123",
+			containerEngine,
+			containerOptions: [
+				{
+					image_uri: "docker.io/example/browser:latest",
+					class_name: "Browser",
+					image_tag: "cloudflare-dev/browser:build-123",
+				},
+			],
+			dockerPath: "docker",
+		});
 	});
 });

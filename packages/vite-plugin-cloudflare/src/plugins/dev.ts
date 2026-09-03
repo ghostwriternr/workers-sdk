@@ -1,9 +1,8 @@
 import assert from "node:assert";
 import {
 	getCloudflareContainerRegistry,
-	prepareContainerImagesForDev,
+	prepareLocalContainers,
 } from "@cloudflare/containers-shared";
-import { cleanupContainers } from "@cloudflare/containers-shared/src/utils";
 import { generateStaticRoutingRuleMatcher } from "@cloudflare/workers-shared/asset-worker/src/utils/rules-engine";
 import { UserError } from "@cloudflare/workers-utils";
 import { buildPublicUrl, CoreHeaders } from "miniflare";
@@ -30,6 +29,7 @@ import {
 	satisfiesMinimumViteVersion,
 } from "../utils";
 import { handleWebSocket } from "../websockets";
+import type { PreparedLocalContainers } from "@cloudflare/containers-shared";
 import type { StaticRouting } from "@cloudflare/workers-shared/utils/types";
 
 let exitCallback = () => {};
@@ -42,19 +42,19 @@ process.on("exit", () => {
  * Plugin to provide core development functionality
  */
 export const devPlugin = createPlugin("dev", (ctx) => {
-	let containerImageTags = new Set<string>();
+	let preparedContainers: PreparedLocalContainers | undefined;
 
 	return {
-		buildEnd() {
+		async buildEnd() {
 			// Server restarts are handled here.
 			// Server shutdown is handled in the patched `server.close()`.
 			if (
 				ctx.resolvedViteConfig.command === "serve" &&
 				ctx.isRestartingDevServer &&
-				containerImageTags.size
+				preparedContainers !== undefined
 			) {
-				const dockerPath = getDockerPath();
-				cleanupContainers(dockerPath, containerImageTags);
+				await preparedContainers.dispose();
+				preparedContainers = undefined;
 			}
 		},
 		async configureServer(viteDevServer) {
@@ -76,14 +76,13 @@ export const devPlugin = createPlugin("dev", (ctx) => {
 					await closeServer();
 				} finally {
 					if (!ctx.isRestartingDevServer) {
-						if (containerImageTags.size) {
-							cleanupContainers(getDockerPath(), containerImageTags);
-						}
 						try {
 							await ctx.disposeMiniflare();
 						} catch (error) {
 							debuglog("Failed to dispose Miniflare instance:", error);
 						}
+						await preparedContainers?.dispose();
+						preparedContainers = undefined;
 					}
 				}
 			};
@@ -271,16 +270,13 @@ export const devPlugin = createPlugin("dev", (ctx) => {
 						configureContainerPull(accountId, apiToken, ctx.entryWorkerConfig);
 					}
 
-					await prepareContainerImagesForDev({
+					preparedContainers = await prepareLocalContainers({
 						dockerPath: getDockerPath(),
 						containerOptions: [...containerTagToOptionsMap.values()],
-						onContainerImagePreparationStart: () => {},
-						onContainerImagePreparationEnd: () => {},
 						logger: viteDevServer.config.logger,
 						complianceConfig: ctx.entryWorkerConfig,
 					});
 
-					containerImageTags = new Set(containerTagToOptionsMap.keys());
 					viteDevServer.config.logger.info(
 						colors.dim(
 							colors.yellow(
@@ -304,9 +300,7 @@ export const devPlugin = createPlugin("dev", (ctx) => {
 					 *
 					 */
 					exitCallback = () => {
-						if (containerImageTags.size) {
-							cleanupContainers(getDockerPath(), containerImageTags);
-						}
+						void preparedContainers?.dispose();
 					};
 				}
 			}
