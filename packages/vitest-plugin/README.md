@@ -6,6 +6,7 @@ Refer to the [documentation](https://developers.cloudflare.com/workers/testing/v
 - ✅ Supports both **unit tests** and **integration tests**
 - 📚 Provides direct access to Workers runtime APIs and bindings
 - 📦 Implements isolated per-test storage
+- 🐳 Prepares configured container images for testing `ctx.container`
 - 🔥 Runs tests fully-locally using [Miniflare](https://miniflare.dev/)
 - ⚡️ Leverages Vitest's hot-module reloading for near instant reruns
 - ↩️ Provides a declarative interface for mocking outbound requests
