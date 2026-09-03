@@ -116,6 +116,10 @@ async function prepare(
 		containerOptions: plan.containerOptions,
 		logger,
 		complianceConfig: config,
+		dockerUnavailable: {
+			operation: "running tests",
+			hint: "If these tests do not exercise container instances, set dev.enable_containers to false in your Worker configuration.",
+		},
 	});
 
 	return {

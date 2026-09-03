@@ -41,12 +41,17 @@ describe("prepareLocalContainers", () => {
 	}) => {
 		const onContainerImagePreparationStart = vi.fn();
 		const onContainerImagePreparationEnd = vi.fn();
+		const dockerUnavailable = {
+			operation: "running tests",
+			hint: "Disable containers for this test project.",
+		};
 		const prepared = await prepareLocalContainers({
 			dockerPath: "docker",
 			containerOptions: [container, container],
 			logger,
 			onContainerImagePreparationStart,
 			onContainerImagePreparationEnd,
+			dockerUnavailable,
 		});
 
 		expect(prepareContainerImagesForDev).toHaveBeenCalledWith(
@@ -54,6 +59,7 @@ describe("prepareLocalContainers", () => {
 				dockerPath: "docker",
 				containerOptions: [container],
 				logger,
+				dockerUnavailable,
 			})
 		);
 		const preparationCallbacks = vi.mocked(prepareContainerImagesForDev).mock

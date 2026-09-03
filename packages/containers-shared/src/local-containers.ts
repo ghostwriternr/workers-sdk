@@ -36,6 +36,10 @@ export async function prepareLocalContainers(
 		logger: WranglerLogger | ViteLogger;
 		complianceConfig?: ComplianceConfig;
 		signal?: AbortSignal;
+		dockerUnavailable?: {
+			operation: string;
+			hint: string;
+		};
 	} & LocalContainerPreparationCallbacks
 ): Promise<PreparedLocalContainers | undefined> {
 	const containerOptions = Array.from(
@@ -72,6 +76,7 @@ export async function prepareLocalContainers(
 			},
 			logger: options.logger,
 			complianceConfig: options.complianceConfig,
+			dockerUnavailable: options.dockerUnavailable,
 		});
 		options.signal?.throwIfAborted();
 	} finally {

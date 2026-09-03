@@ -127,6 +127,10 @@ export async function prepareContainerImagesForDev(args: {
 	}) => void;
 	logger: WranglerLogger | ViteLogger;
 	complianceConfig?: ComplianceConfig;
+	dockerUnavailable?: {
+		operation: string;
+		hint: string;
+	};
 }): Promise<void> {
 	const {
 		dockerPath,
@@ -143,12 +147,14 @@ export async function prepareContainerImagesForDev(args: {
 	}
 	await verifyDockerInstalled({
 		dockerPath,
-		operation: "running dev",
+		operation: args.dockerUnavailable?.operation ?? "running dev",
 		imageNoun:
 			containerOptions.length !== 1
 				? "the configured images"
 				: "the configured image",
-		hint: "To suppress this error if you do not intend on triggering any container instances, set dev.enable_containers to false in your Wrangler config or pass --enable-containers=false.",
+		hint:
+			args.dockerUnavailable?.hint ??
+			"To suppress this error if you do not intend on triggering any container instances, set dev.enable_containers to false in your Wrangler config or pass --enable-containers=false.",
 	});
 	for (const options of containerOptions) {
 		if ("dockerfile" in options) {
