@@ -138,9 +138,13 @@ async function releaseEnvironment(
 		return;
 	}
 
-	environments.delete(key);
 	const environment = await entry.preparation.catch(() => undefined);
-	await environment?.prepared?.dispose();
+	// Keep successful preparations cached until Vitest closes so ordinary watch
+	// reruns reuse the same build ID and image. Failed or inactive plans may be
+	// retried because they own no resources.
+	if (environment === undefined) {
+		environments.delete(key);
+	}
 }
 
 function configureManagedRegistry(
@@ -176,7 +180,7 @@ function configureManagedRegistry(
 	);
 }
 
-/** Disposes all prepared environments after the final pool worker stops. */
+/** Disposes all prepared environments when the Vitest process closes. */
 export async function disposeAllProjectContainers(): Promise<void> {
 	const pending = [...environments.values()].map(
 		({ preparation }) => preparation

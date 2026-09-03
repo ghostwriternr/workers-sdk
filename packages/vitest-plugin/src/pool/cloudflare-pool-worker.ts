@@ -5,7 +5,6 @@ import { compileModuleRules, testRegExps } from "miniflare";
 import { type ProvidedContext } from "vitest";
 import { workerdBuiltinModules } from "../shared/builtin-modules";
 import { disposeAllRemoteProxySessions, parseProjectOptions } from "./config";
-import { disposeAllProjectContainers } from "./containers";
 import { poolWorkerStarted, poolWorkerStopped } from "./pages";
 import { type WorkerPoolOptionsContext } from "./plugin";
 import {
@@ -159,14 +158,9 @@ export class CloudflarePoolWorker implements PoolWorker {
 		// Wrangler config, and consecutive workers overlap, so only dispose them
 		// once the last worker stops.
 		if (wasLastWorker) {
-			await Promise.all([
-				disposeAllRemoteProxySessions().catch((err) => {
-					this.debug("remote proxy session dispose rejected: %O", err);
-				}),
-				disposeAllProjectContainers().catch((err) => {
-					this.debug("container environment dispose rejected: %O", err);
-				}),
-			]);
+			await disposeAllRemoteProxySessions().catch((err) => {
+				this.debug("remote proxy session dispose rejected: %O", err);
+			});
 		}
 	}
 

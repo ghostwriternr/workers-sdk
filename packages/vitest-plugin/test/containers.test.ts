@@ -33,7 +33,7 @@ describe("project container environments", () => {
 		expect(prepareLocalContainers).not.toHaveBeenCalled();
 	});
 
-	it("shares preparation and disposes it once", async ({ expect }) => {
+	it("shares preparation across sequential leases", async ({ expect }) => {
 		const dispose = vi.fn();
 		vi.mocked(createLocalContainerPlan).mockReturnValue({
 			containerBuildId: "build-id",
@@ -59,12 +59,21 @@ describe("project container environments", () => {
 		await first?.release();
 		expect(dispose).not.toHaveBeenCalled();
 		await second?.release();
-		expect(dispose).toHaveBeenCalledOnce();
+		expect(dispose).not.toHaveBeenCalled();
 		await second?.release();
+		const third = await prepareProjectContainers(
+			config,
+			"/project/wrangler.jsonc",
+			"dev"
+		);
+		expect(createLocalContainerPlan).toHaveBeenCalledOnce();
+		expect(prepareLocalContainers).toHaveBeenCalledOnce();
+		await third?.release();
+		await disposeAllProjectContainers();
 		expect(dispose).toHaveBeenCalledOnce();
 	});
 
-	it("disposes projects independently", async ({ expect }) => {
+	it("tracks project preparations independently", async ({ expect }) => {
 		const disposeA = vi.fn();
 		const disposeB = vi.fn();
 		vi.mocked(createLocalContainerPlan).mockReturnValue({
@@ -91,9 +100,11 @@ describe("project container environments", () => {
 		]);
 
 		await projectA?.release();
-		expect(disposeA).toHaveBeenCalledOnce();
+		expect(disposeA).not.toHaveBeenCalled();
 		expect(disposeB).not.toHaveBeenCalled();
 		await projectB?.release();
+		await disposeAllProjectContainers();
+		expect(disposeA).toHaveBeenCalledOnce();
 		expect(disposeB).toHaveBeenCalledOnce();
 	});
 

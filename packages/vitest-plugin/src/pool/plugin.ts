@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { disposeAllProjectContainers } from "./containers";
 import { cloudflarePool } from "./pool";
 import type { WorkersPoolOptions } from "./config";
 import type { ProvidedContext } from "vitest";
-import type { Vite, VitestPluginContext } from "vitest/node";
+import type { Vite, Vitest, VitestPluginContext } from "vitest/node";
 
 type ProvidedContextKeys = keyof ProvidedContext & string;
 declare const explicitInjectTypeArgumentRequired: unique symbol;
@@ -60,6 +61,7 @@ function ensureArrayExcludes<T>(array: T[], items: T[]) {
 
 const requiredConditions = ["workerd", "worker", "module", "browser"];
 const requiredMainFields = ["browser", "module", "jsnext:main", "jsnext"];
+const cleanupRegisteredFor = new WeakSet<Vitest>();
 
 export function cloudflareTest(
 	options:
@@ -80,6 +82,10 @@ export function cloudflareTest(
 			},
 		},
 		configureVitest(context: VitestPluginContext) {
+			if (!cleanupRegisteredFor.has(context.project.vitest)) {
+				cleanupRegisteredFor.add(context.project.vitest);
+				context.project.vitest.onClose(disposeAllProjectContainers);
+			}
 			context.project.config.poolRunner = cloudflarePool(options);
 			context.project.config.pool = "cloudflare-pool";
 			context.project.config.snapshotEnvironment = "cloudflare:snapshot";
