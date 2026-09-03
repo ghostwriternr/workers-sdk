@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
 	cleanupContainers,
 	getDevContainerImageName,
-	prepareContainerImagesForDev,
+	prepareLocalContainers,
 	runDockerCmdWithOutput,
 } from "@cloudflare/containers-shared";
 import { getDockerPath } from "@cloudflare/workers-utils";
@@ -373,7 +373,7 @@ export class LocalRuntimeController extends RuntimeController {
 					this.containerImageTagsSeen.add(container.image_tag);
 				}
 				logger.log(chalk.dim("⎔ Preparing container image(s)..."));
-				await prepareContainerImagesForDev({
+				await prepareLocalContainers({
 					dockerPath: this.dockerPath,
 					containerOptions: containerDevOptions,
 					onContainerImagePreparationStart: (buildStartEvent) => {

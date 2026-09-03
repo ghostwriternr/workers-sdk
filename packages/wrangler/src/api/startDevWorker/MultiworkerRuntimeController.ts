@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { randomUUID } from "node:crypto";
-import { prepareContainerImagesForDev } from "@cloudflare/containers-shared";
+import { prepareLocalContainers } from "@cloudflare/containers-shared";
 import { getDockerPath } from "@cloudflare/workers-utils";
 import chalk from "chalk";
 import { convertV4MiniflareOptions, Miniflare, Mutex } from "miniflare";
@@ -191,7 +191,7 @@ export class MultiworkerRuntimeController extends LocalRuntimeController {
 				for (const container of containerOptions ?? []) {
 					this.containerImageTagsSeen.add(container.image_tag);
 				}
-				await prepareContainerImagesForDev({
+				await prepareLocalContainers({
 					dockerPath: this.dockerPath,
 					containerOptions,
 					onContainerImagePreparationStart: (buildStartEvent) => {

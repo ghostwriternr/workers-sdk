@@ -9,6 +9,16 @@ export interface PreparedLocalContainers {
 	dispose(): Promise<void>;
 }
 
+interface LocalContainerPreparationCallbacks {
+	onContainerImagePreparationStart?: (args: {
+		containerOptions: ContainerDevOptions;
+		abort: () => void;
+	}) => void;
+	onContainerImagePreparationEnd?: (args: {
+		containerOptions: ContainerDevOptions;
+	}) => void;
+}
+
 /**
  * Builds or pulls the images required by a local container runtime and returns
  * an idempotent cleanup handle for containers created from those images.
@@ -19,13 +29,15 @@ export interface PreparedLocalContainers {
  * @param options - Local image options, Docker settings, and cancellation state.
  * @returns A cleanup handle, or `undefined` when no images require preparation.
  */
-export async function prepareLocalContainers(options: {
-	dockerPath: string;
-	containerOptions: Iterable<ContainerDevOptions>;
-	logger: WranglerLogger | ViteLogger;
-	complianceConfig?: ComplianceConfig;
-	signal?: AbortSignal;
-}): Promise<PreparedLocalContainers | undefined> {
+export async function prepareLocalContainers(
+	options: {
+		dockerPath: string;
+		containerOptions: Iterable<ContainerDevOptions>;
+		logger: WranglerLogger | ViteLogger;
+		complianceConfig?: ComplianceConfig;
+		signal?: AbortSignal;
+	} & LocalContainerPreparationCallbacks
+): Promise<PreparedLocalContainers | undefined> {
 	const containerOptions = Array.from(
 		new Map(
 			Array.from(options.containerOptions, (option) => [
@@ -46,14 +58,17 @@ export async function prepareLocalContainers(options: {
 		await prepareContainerImagesForDev({
 			dockerPath: options.dockerPath,
 			containerOptions,
-			onContainerImagePreparationStart: ({ abort: abortPreparation }) => {
+			onContainerImagePreparationStart: (event) => {
+				const abortPreparation = event.abort;
 				abortActivePreparation = abortPreparation;
+				options.onContainerImagePreparationStart?.(event);
 				if (options.signal?.aborted) {
 					abortPreparation();
 				}
 			},
-			onContainerImagePreparationEnd: () => {
+			onContainerImagePreparationEnd: (event) => {
 				abortActivePreparation = undefined;
+				options.onContainerImagePreparationEnd?.(event);
 			},
 			logger: options.logger,
 			complianceConfig: options.complianceConfig,

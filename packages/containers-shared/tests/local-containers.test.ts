@@ -39,10 +39,14 @@ describe("prepareLocalContainers", () => {
 	it("deduplicates preparation and returns an idempotent cleanup handle", async ({
 		expect,
 	}) => {
+		const onContainerImagePreparationStart = vi.fn();
+		const onContainerImagePreparationEnd = vi.fn();
 		const prepared = await prepareLocalContainers({
 			dockerPath: "docker",
 			containerOptions: [container, container],
 			logger,
+			onContainerImagePreparationStart,
+			onContainerImagePreparationEnd,
 		});
 
 		expect(prepareContainerImagesForDev).toHaveBeenCalledWith(
@@ -52,6 +56,17 @@ describe("prepareLocalContainers", () => {
 				logger,
 			})
 		);
+		const preparationCallbacks = vi.mocked(prepareContainerImagesForDev).mock
+			.calls[0]?.[0];
+		preparationCallbacks?.onContainerImagePreparationStart({
+			containerOptions: container,
+			abort: vi.fn(),
+		});
+		preparationCallbacks?.onContainerImagePreparationEnd({
+			containerOptions: container,
+		});
+		expect(onContainerImagePreparationStart).toHaveBeenCalledOnce();
+		expect(onContainerImagePreparationEnd).toHaveBeenCalledOnce();
 		expect(prepared?.imageTags).toEqual(
 			new Set(["cloudflare-dev/browser:build-123"])
 		);
