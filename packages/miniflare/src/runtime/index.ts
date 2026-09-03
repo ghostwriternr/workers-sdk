@@ -11,7 +11,6 @@ import { z } from "zod";
 import { SERVICE_LOOPBACK, SOCKET_ENTRY } from "../plugins";
 import { MiniflareCoreError } from "../shared";
 import { handleStructuredLogsFromStream } from "./structured-logs";
-import type { Awaitable } from "../workers";
 import type { StructuredLogsHandler } from "./structured-logs";
 import type { Abortable } from "node:events";
 
@@ -47,6 +46,7 @@ export interface RuntimeOptions {
 	// Merged on top of `process.env` and Miniflare's own defaults
 	// (e.g. `TZ=UTC`, `FORCE_COLOR`), so callers can override those defaults.
 	runtimeEnv?: Record<string, string>;
+	gracefulShutdown?: boolean;
 }
 
 async function waitForPorts(
@@ -240,6 +240,7 @@ class StartupLogBuffer {
 export class Runtime {
 	#process?: childProcess.ChildProcess;
 	#processExitPromise?: Promise<void>;
+	#gracefulShutdown = false;
 
 	async updateConfig(
 		configBuffer: Buffer,
@@ -249,6 +250,7 @@ export class Runtime {
 	): Promise<SocketPorts | undefined> {
 		// 1. Stop existing process (if any) and wait for exit
 		await this.dispose();
+		this.#gracefulShutdown = options.gracefulShutdown ?? false;
 
 		// 2. Start new process
 		const command = getRuntimeCommand();
@@ -373,7 +375,7 @@ export class Runtime {
 		return ports;
 	}
 
-	dispose(): Awaitable<void> {
+	async dispose(): Promise<void> {
 		const runtimeProcess = this.#process;
 		if (runtimeProcess === undefined) {
 			return;
@@ -395,15 +397,31 @@ export class Runtime {
 			controlPipe.destroy();
 		}
 
-		// `kill()` uses `SIGTERM` by default. In `workerd`, this waits for HTTP
-		// connections to close before exiting. Notably, Chrome sometimes keeps
-		// connections open for about 10s, blocking exit. We'd like `dispose()`/
-		// `setOptions()` to immediately terminate the existing process.
-		// Therefore, use `SIGKILL` which force closes all connections.
-		// See https://github.com/cloudflare/workerd/pull/244.
-		runtimeProcess.kill("SIGKILL");
+		if (!this.#gracefulShutdown) {
+			// `kill()` uses `SIGTERM` by default. In `workerd`, this waits for HTTP
+			// connections to close before exiting. Notably, Chrome sometimes keeps
+			// connections open for about 10s, blocking exit. We'd like `dispose()`/
+			// `setOptions()` to immediately terminate the existing process.
+			// Therefore, use `SIGKILL` which force closes all connections.
+			// See https://github.com/cloudflare/workerd/pull/244.
+			runtimeProcess.kill("SIGKILL");
+			return this.#processExitPromise;
+		}
 
-		return this.#processExitPromise;
+		// Container cleanup is owned by workerd and requires a graceful shutdown while its
+		// Docker connection is still alive. Bound the wait so open HTTP connections cannot
+		// indefinitely block Miniflare disposal.
+		runtimeProcess.kill("SIGTERM");
+		const forceKillTimeout = setTimeout(
+			() => runtimeProcess.kill("SIGKILL"),
+			5_000
+		);
+		forceKillTimeout.unref();
+		try {
+			await this.#processExitPromise;
+		} finally {
+			clearTimeout(forceKillTimeout);
+		}
 	}
 }
 
