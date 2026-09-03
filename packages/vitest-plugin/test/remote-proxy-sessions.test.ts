@@ -23,14 +23,18 @@ function fakeSessionData(dispose: () => Promise<void>): RemoteProxySessionData {
 	};
 }
 
-// Bypasses the constructor's version check; start() is never called so
-// socket/miniflare are undefined and stop() exercises only session disposal.
+// Bypasses the constructor's version check; socket/miniflare are undefined and
+// stop() exercises only shared-resource disposal.
 function createPoolWorker(): CloudflarePoolWorker {
 	const worker = Object.create(
 		CloudflarePoolWorker.prototype
 	) as CloudflarePoolWorker;
 	Object.defineProperty(worker, "debug", {
 		value: util.debuglog("vitest-plugin"),
+	});
+	Object.defineProperty(worker, "countedAsStarted", {
+		value: true,
+		writable: true,
 	});
 	return worker;
 }

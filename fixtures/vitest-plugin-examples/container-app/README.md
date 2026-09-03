@@ -1,3 +1,5 @@
-# Apps with no-op containers
+# Container-backed Durable Objects
 
-Currently, `vitest-plugin` does not support testing containers yet. It should still let you test your application as long as you do not test with any code paths that interact with containers.
+This fixture verifies that the Vitest plugin builds the image declared in the
+Worker configuration and exercises the attached container through the real
+`ctx.container` runtime interface.

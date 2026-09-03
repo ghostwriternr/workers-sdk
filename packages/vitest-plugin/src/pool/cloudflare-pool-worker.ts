@@ -5,6 +5,7 @@ import { compileModuleRules, testRegExps } from "miniflare";
 import { type ProvidedContext } from "vitest";
 import { workerdBuiltinModules } from "../shared/builtin-modules";
 import { disposeAllRemoteProxySessions, parseProjectOptions } from "./config";
+import { disposeAllProjectContainers } from "./containers";
 import { poolWorkerStarted, poolWorkerStopped } from "./pages";
 import { type WorkerPoolOptionsContext } from "./plugin";
 import {
@@ -41,6 +42,7 @@ export class CloudflarePoolWorker implements PoolWorker {
 	private socket: WebSocket | undefined;
 	private parsedPoolOptions: WorkersPoolOptionsWithDefines | undefined;
 	private main: string | undefined;
+	private countedAsStarted = false;
 	// Store wrapped listeners so off() can remove them correctly.
 	// Vitest registers at most one listener per event type.
 	private messageListener?: (event: MiniflareMessageEvent) => void;
@@ -60,57 +62,69 @@ export class CloudflarePoolWorker implements PoolWorker {
 
 	async start(): Promise<void> {
 		poolWorkerStarted();
+		this.countedAsStarted = true;
 
-		let resolvedPoolOptions: WorkersPoolOptions;
-		if (typeof this.poolOptions === "function") {
-			// https://github.com/vitest-dev/vitest/blob/v4.0.18/packages/vitest/src/integrations/inject.ts
-			const inject: WorkerPoolOptionsContext["inject"] = <T = unknown>(
-				key: string
-			): T => {
-				return this.options.project.getProvidedContext()[
-					key as keyof ProvidedContext
-				] as T;
-			};
-			resolvedPoolOptions = await this.poolOptions({ inject });
-		} else {
-			resolvedPoolOptions = this.poolOptions;
+		try {
+			let resolvedPoolOptions: WorkersPoolOptions;
+			if (typeof this.poolOptions === "function") {
+				// https://github.com/vitest-dev/vitest/blob/v4.0.18/packages/vitest/src/integrations/inject.ts
+				const inject: WorkerPoolOptionsContext["inject"] = <T = unknown>(
+					key: string
+				): T => {
+					return this.options.project.getProvidedContext()[
+						key as keyof ProvidedContext
+					] as T;
+				};
+				resolvedPoolOptions = await this.poolOptions({ inject });
+			} else {
+				resolvedPoolOptions = this.poolOptions;
+			}
+
+			this.parsedPoolOptions = await parseProjectOptions(
+				this.options.project,
+				resolvedPoolOptions
+			);
+			this.main = maybeGetResolvedMainPath(
+				this.options.project,
+				this.parsedPoolOptions
+			);
+
+			// Find the vitest-plugin plugin and give it the path to the main file.
+			// This allows that plugin to inject a virtual dependency on main so that vitest
+			// will automatically re-run tests when that gets updated, avoiding the user having
+			// to manually add such an import in their tests.
+			const configPlugin = this.options.project.vite.config.plugins.find(
+				({ name }) => name === "@cloudflare/vitest-plugin"
+			);
+			if (configPlugin !== undefined) {
+				const api = configPlugin.api as WorkersConfigPluginAPI;
+				api.setMain(this.main);
+			}
+
+			this.mf = await getProjectMiniflare(
+				this.options.project.vitest,
+				this.options.project,
+				this.parsedPoolOptions,
+				this.main
+			);
+
+			this.socket = await connectToMiniflareSocket(
+				this.mf,
+				getRunnerName(this.options.project)
+			);
+		} catch (error) {
+			await this.disposeRuntime();
+			await this.releaseGlobalResources();
+			throw error;
 		}
-
-		this.parsedPoolOptions = await parseProjectOptions(
-			this.options.project,
-			resolvedPoolOptions
-		);
-		this.main = maybeGetResolvedMainPath(
-			this.options.project,
-			this.parsedPoolOptions
-		);
-
-		// Find the vitest-plugin plugin and give it the path to the main file.
-		// This allows that plugin to inject a virtual dependency on main so that vitest
-		// will automatically re-run tests when that gets updated, avoiding the user having
-		// to manually add such an import in their tests.
-		const configPlugin = this.options.project.vite.config.plugins.find(
-			({ name }) => name === "@cloudflare/vitest-plugin"
-		);
-		if (configPlugin !== undefined) {
-			const api = configPlugin.api as WorkersConfigPluginAPI;
-			api.setMain(this.main);
-		}
-
-		this.mf = await getProjectMiniflare(
-			this.options.project.vitest,
-			this.options.project,
-			this.parsedPoolOptions,
-			this.main
-		);
-
-		this.socket = await connectToMiniflareSocket(
-			this.mf,
-			getRunnerName(this.options.project)
-		);
 	}
 
 	async stop(): Promise<void> {
+		await this.disposeRuntime();
+		await this.releaseGlobalResources();
+	}
+
+	private async disposeRuntime(): Promise<void> {
 		this.socket?.close();
 		this.socket = undefined;
 		// Disposal errors should not override the test result, but log them for
@@ -119,6 +133,13 @@ export class CloudflarePoolWorker implements PoolWorker {
 			this.debug("miniflare dispose rejected: %O", err);
 		});
 		this.mf = undefined;
+	}
+
+	private async releaseGlobalResources(): Promise<void> {
+		if (!this.countedAsStarted) {
+			return;
+		}
+		this.countedAsStarted = false;
 
 		// Decrement the active worker count. When the last worker stops, this
 		// closes file watchers created by buildPagesASSETSBinding() during config
@@ -130,9 +151,14 @@ export class CloudflarePoolWorker implements PoolWorker {
 		// Wrangler config, and consecutive workers overlap, so only dispose them
 		// once the last worker stops.
 		if (wasLastWorker) {
-			await disposeAllRemoteProxySessions().catch((err) => {
-				this.debug("remote proxy session dispose rejected: %O", err);
-			});
+			await Promise.all([
+				disposeAllRemoteProxySessions().catch((err) => {
+					this.debug("remote proxy session dispose rejected: %O", err);
+				}),
+				disposeAllProjectContainers().catch((err) => {
+					this.debug("container environment dispose rejected: %O", err);
+				}),
+			]);
 		}
 	}
 

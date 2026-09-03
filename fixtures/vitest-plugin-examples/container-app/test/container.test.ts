@@ -1,16 +1,21 @@
 import { exports } from "cloudflare:workers";
-import { it } from "vitest";
+import { it, vi } from "vitest";
 
-it("dispatches fetch event", { timeout: 10_000 }, async ({ expect }) => {
-	// requests to code paths that do not interact with a container should work fine
-	const res = await exports.default.fetch("http://example.com/");
-	expect(await res.text()).toMatchInlineSnapshot(`
-		"Call /container to start a container with a 10s timeout.
-		Call /error to start a container that errors
-		Call /lb to test load balancing"
-	`);
-	// however if you attempt to start a container, you should expect an error
-	await expect(
-		exports.default.fetch("http://example.com/container/hello")
-	).rejects.toThrow();
+it("reaches a container through the Worker", async ({ expect }) => {
+	const response = await exports.default.fetch("http://example.com/");
+	expect(await response.text()).toBe(
+		"Call /container to start the attached container"
+	);
+
+	await vi.waitFor(
+		async () => {
+			const containerResponse = await exports.default.fetch(
+				"http://example.com/container"
+			);
+			expect(await containerResponse.text()).toBe(
+				"Hello World! Have an env var! I was passed through ctx.container!"
+			);
+		},
+		{ interval: 500, timeout: 30_000 }
+	);
 });

@@ -11,6 +11,7 @@ import {
 	V4WorkerOptionsSchema,
 } from "miniflare";
 import { z } from "zod";
+import { prepareProjectContainers } from "./containers";
 import {
 	getProjectPath,
 	getRelativeProjectConfigPath,
@@ -23,6 +24,7 @@ import type {
 } from "@cloudflare/remote-bindings";
 import type { Config } from "@cloudflare/workers-utils";
 import type { LegacyWorkerOptions, V4ModuleRule } from "miniflare";
+import type { V4MiniflareOptions } from "miniflare";
 import type { TestProject } from "vitest/node";
 import type { ZodError } from "zod";
 
@@ -128,6 +130,8 @@ export type WorkersPoolOptions = z.input<typeof WorkersPoolOptionsSchema> & {
 export type WorkersPoolOptionsWithDefines = WorkersPoolOptions & {
 	defines?: Record<string, string>;
 	moduleRules?: V4ModuleRule[];
+	/** Container engine prepared from the resolved Worker configuration. */
+	containerEngine?: V4MiniflareOptions["containerEngine"];
 	/**
 	 * Details of the configuration file these options were resolved from. Set
 	 * while parsing; not a user-facing option. Undefined when the project
@@ -448,13 +452,19 @@ async function parseCustomPoolOptions(
 			remoteProxySessionsDataMap.set(configPath, remoteProxySessionData);
 		}
 
+		const containerEnvironment = await prepareProjectContainers(
+			config,
+			configPath,
+			environment
+		);
+		options.containerEngine = containerEnvironment?.containerEngine;
+
 		const { workerOptions, externalWorkers, define, main } =
 			wrangler.unstable_getMiniflareWorkerOptions(config, environment, {
 				overrides: {
 					assets: options.miniflare.assets,
-					// doesn't work with containers yet so let's just disable it
-					enableContainers: false,
 				},
+				containerBuildId: containerEnvironment?.containerBuildId,
 				remoteProxyConnectionString:
 					remoteProxySessionData?.session?.remoteProxyConnectionString,
 			});
