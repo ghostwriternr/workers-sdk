@@ -78,17 +78,46 @@ export function cloudflareTest(
 	let containerWatch: Parameters<
 		WorkersConfigPluginAPI["setContainerWatch"]
 	>[0];
-	const onContainerInputChange = (changedPath: string): void => {
+	const invalidateContainerInput = (changedPath: string): boolean => {
 		const resolvedPath = path.resolve(changedPath);
-		if (
+		const matches =
 			containerWatch?.files.includes(resolvedPath) ||
 			containerWatch?.directories.some((directory) => {
 				const relativePath = path.relative(directory, resolvedPath);
 				return relativePath !== "" && !relativePath.startsWith(`..${path.sep}`);
-			})
-		) {
-			containerWatch.invalidate();
+			});
+		if (matches) {
+			containerWatch?.invalidate();
 		}
+		return matches === true;
+	};
+	const onContainerInputChange = (changedPath: string): void => {
+		invalidateContainerInput(changedPath);
+	};
+	const onContainerInputDelete = (changedPath: string): void => {
+		if (!invalidateContainerInput(changedPath) || project === undefined) {
+			return;
+		}
+		const currentProject = project;
+
+		// Vitest's forceRerunTriggers do not apply to unlink events. Use its
+		// public project APIs to rerun this project's tests after a context file
+		// is deleted, which will surface the resulting Docker build error.
+		void currentProject
+			.globTestFiles()
+			.then(({ testFiles }) =>
+				currentProject.vitest.rerunTestSpecifications(
+					testFiles.map((testFile) =>
+						currentProject.createSpecification(testFile)
+					)
+				)
+			)
+			.catch((error: unknown) => {
+				currentProject.vitest.logger.error(
+					"Failed to rerun tests after a container build-context file was deleted",
+					error
+				);
+			});
 	};
 	return {
 		name: "@cloudflare/vitest-plugin",
@@ -130,12 +159,17 @@ export function cloudflareTest(
 			}
 			context.project.vitest.vite.watcher.on("change", onContainerInputChange);
 			context.project.vitest.vite.watcher.on("add", onContainerInputChange);
+			context.project.vitest.vite.watcher.on("unlink", onContainerInputDelete);
 			context.project.vitest.onClose(() => {
 				context.project.vitest.vite.watcher.off(
 					"change",
 					onContainerInputChange
 				);
 				context.project.vitest.vite.watcher.off("add", onContainerInputChange);
+				context.project.vitest.vite.watcher.off(
+					"unlink",
+					onContainerInputDelete
+				);
 			});
 			context.project.config.poolRunner = cloudflarePool(options);
 			context.project.config.pool = "cloudflare-pool";
