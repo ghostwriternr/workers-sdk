@@ -52,13 +52,49 @@ describe("project container environments", () => {
 			prepareProjectContainers(config, "/project/wrangler.jsonc", "dev"),
 		]);
 
-		expect(first).toBe(second);
+		expect(first?.containerBuildId).toBe(second?.containerBuildId);
 		expect(createLocalContainerPlan).toHaveBeenCalledOnce();
 		expect(prepareLocalContainers).toHaveBeenCalledOnce();
 
-		await disposeAllProjectContainers();
-		await disposeAllProjectContainers();
+		await first?.release();
+		expect(dispose).not.toHaveBeenCalled();
+		await second?.release();
 		expect(dispose).toHaveBeenCalledOnce();
+		await second?.release();
+		expect(dispose).toHaveBeenCalledOnce();
+	});
+
+	it("disposes projects independently", async ({ expect }) => {
+		const disposeA = vi.fn();
+		const disposeB = vi.fn();
+		vi.mocked(createLocalContainerPlan).mockReturnValue({
+			containerBuildId: "build-id",
+			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
+			dockerPath: "docker",
+			containerOptions: [],
+		});
+		vi.mocked(prepareLocalContainers)
+			.mockResolvedValueOnce({
+				dockerPath: "docker",
+				imageTags: new Set(),
+				dispose: disposeA,
+			})
+			.mockResolvedValueOnce({
+				dockerPath: "docker",
+				imageTags: new Set(),
+				dispose: disposeB,
+			});
+
+		const [projectA, projectB] = await Promise.all([
+			prepareProjectContainers(config, "/project-a/wrangler.jsonc"),
+			prepareProjectContainers(config, "/project-b/wrangler.jsonc"),
+		]);
+
+		await projectA?.release();
+		expect(disposeA).toHaveBeenCalledOnce();
+		expect(disposeB).not.toHaveBeenCalled();
+		await projectB?.release();
+		expect(disposeB).toHaveBeenCalledOnce();
 	});
 
 	it("retries after preparation fails", async ({ expect }) => {

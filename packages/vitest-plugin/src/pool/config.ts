@@ -132,6 +132,8 @@ export type WorkersPoolOptionsWithDefines = WorkersPoolOptions & {
 	moduleRules?: V4ModuleRule[];
 	/** Container engine prepared from the resolved Worker configuration. */
 	containerEngine?: V4MiniflareOptions["containerEngine"];
+	/** Releases this pool worker's reference to its prepared container environment. */
+	releaseContainerEnvironment?: () => Promise<void>;
 	/**
 	 * Details of the configuration file these options were resolved from. Set
 	 * while parsing; not a user-facing option. Undefined when the project
@@ -458,58 +460,65 @@ async function parseCustomPoolOptions(
 			environment
 		);
 		options.containerEngine = containerEnvironment?.containerEngine;
+		options.releaseContainerEnvironment = containerEnvironment?.release;
 
-		const { workerOptions, externalWorkers, define, main } =
-			wrangler.unstable_getMiniflareWorkerOptions(config, environment, {
-				overrides: {
-					assets: options.miniflare.assets,
-				},
-				containerBuildId: containerEnvironment?.containerBuildId,
-				remoteProxyConnectionString:
-					remoteProxySessionData?.session?.remoteProxyConnectionString,
-			});
+		try {
+			const { workerOptions, externalWorkers, define, main } =
+				wrangler.unstable_getMiniflareWorkerOptions(config, environment, {
+					overrides: {
+						assets: options.miniflare.assets,
+					},
+					containerBuildId: containerEnvironment?.containerBuildId,
+					remoteProxyConnectionString:
+						remoteProxySessionData?.session?.remoteProxyConnectionString,
+				});
 
-		// If `main` wasn't explicitly configured, fall back to the config's entrypoint
-		options.main ??= main;
+			// If `main` wasn't explicitly configured, fall back to the config's entrypoint
+			options.main ??= main;
 
-		options.miniflare.workers = [
-			...options.miniflare.workers,
-			...externalWorkers,
-		];
-		const {
-			modulesRules: wranglerModuleRules,
-			...workerOptionsWithoutModuleRules
-		} = workerOptions;
-		const mergedModuleRules = mergeWorkerOptions(
-			{
-				...(wranglerModuleRules === undefined
-					? {}
-					: { modulesRules: wranglerModuleRules }),
-			} as SourcelessWorkerOptions,
-			{
-				...(options.moduleRules === undefined
-					? {}
-					: { modulesRules: options.moduleRules }),
-			} as SourcelessWorkerOptions
-		) as SourcelessWorkerOptions;
-		options.moduleRules = mergedModuleRules.modulesRules;
+			options.miniflare.workers = [
+				...options.miniflare.workers,
+				...externalWorkers,
+			];
+			const {
+				modulesRules: wranglerModuleRules,
+				...workerOptionsWithoutModuleRules
+			} = workerOptions;
+			const mergedModuleRules = mergeWorkerOptions(
+				{
+					...(wranglerModuleRules === undefined
+						? {}
+						: { modulesRules: wranglerModuleRules }),
+				} as SourcelessWorkerOptions,
+				{
+					...(options.moduleRules === undefined
+						? {}
+						: { modulesRules: options.moduleRules }),
+				} as SourcelessWorkerOptions
+			) as SourcelessWorkerOptions;
+			options.moduleRules = mergedModuleRules.modulesRules;
 
-		// Merge generated Miniflare options from the config with specified overrides
-		options.miniflare = mergeWorkerOptions(
-			workerOptionsWithoutModuleRules,
-			options.miniflare as SourcelessWorkerOptions
-		);
+			// Merge generated Miniflare options from the config with specified overrides
+			options.miniflare = mergeWorkerOptions(
+				workerOptionsWithoutModuleRules,
+				options.miniflare as SourcelessWorkerOptions
+			);
 
-		options.miniflare = {
-			...options.miniflare,
-			tails: filterTails(
-				workerOptions.tails as LegacyWorkerOptions["tails"],
-				options.miniflare.workers
-			),
-		};
+			options.miniflare = {
+				...options.miniflare,
+				tails: filterTails(
+					workerOptions.tails as LegacyWorkerOptions["tails"],
+					options.miniflare.workers
+				),
+			};
 
-		// Record any `define`s from the config
-		options.defines = define;
+			// Record any `define`s from the config
+			options.defines = define;
+		} catch (error) {
+			await containerEnvironment?.release();
+			options.releaseContainerEnvironment = undefined;
+			throw error;
+		}
 	}
 
 	// Some assets plumbing that should be hidden from the end user

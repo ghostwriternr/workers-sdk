@@ -43,6 +43,7 @@ export class CloudflarePoolWorker implements PoolWorker {
 	private parsedPoolOptions: WorkersPoolOptionsWithDefines | undefined;
 	private main: string | undefined;
 	private countedAsStarted = false;
+	private releaseContainerEnvironment: (() => Promise<void>) | undefined;
 	// Store wrapped listeners so off() can remove them correctly.
 	// Vitest registers at most one listener per event type.
 	private messageListener?: (event: MiniflareMessageEvent) => void;
@@ -84,6 +85,8 @@ export class CloudflarePoolWorker implements PoolWorker {
 				this.options.project,
 				resolvedPoolOptions
 			);
+			this.releaseContainerEnvironment =
+				this.parsedPoolOptions.releaseContainerEnvironment;
 			this.main = maybeGetResolvedMainPath(
 				this.options.project,
 				this.parsedPoolOptions
@@ -136,6 +139,11 @@ export class CloudflarePoolWorker implements PoolWorker {
 	}
 
 	private async releaseGlobalResources(): Promise<void> {
+		await this.releaseContainerEnvironment?.().catch((err) => {
+			this.debug("container environment release rejected: %O", err);
+		});
+		this.releaseContainerEnvironment = undefined;
+
 		if (!this.countedAsStarted) {
 			return;
 		}

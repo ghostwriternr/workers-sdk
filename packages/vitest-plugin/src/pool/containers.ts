@@ -18,13 +18,21 @@ import type { Config } from "@cloudflare/workers-utils";
 export interface ProjectContainerEnvironment {
 	containerBuildId: string;
 	containerEngine: NonNullable<Config["dev"]["container_engine"]>;
+	release(): Promise<void>;
+}
+
+interface SharedProjectContainerEnvironment {
+	containerBuildId: string;
+	containerEngine: NonNullable<Config["dev"]["container_engine"]>;
 	prepared: PreparedLocalContainers | undefined;
 }
 
-const environments = new Map<
-	string,
-	Promise<ProjectContainerEnvironment | undefined>
->();
+interface EnvironmentEntry {
+	references: number;
+	preparation: Promise<SharedProjectContainerEnvironment | undefined>;
+}
+
+const environments = new Map<string, EnvironmentEntry>();
 
 const logger = {
 	debug: console.debug,
@@ -50,23 +58,46 @@ export function prepareProjectContainers(
 	environment?: string
 ): Promise<ProjectContainerEnvironment | undefined> {
 	const key = `${configPath}\0${environment ?? ""}`;
-	const existing = environments.get(key);
-	if (existing !== undefined) {
-		return existing;
+	let entry = environments.get(key);
+	if (entry === undefined) {
+		entry = {
+			references: 0,
+			preparation: prepare(config, configPath),
+		};
+		environments.set(key, entry);
 	}
+	entry.references++;
 
-	const preparation = prepare(config, configPath).catch((error: unknown) => {
-		environments.delete(key);
-		throw error;
-	});
-	environments.set(key, preparation);
-	return preparation;
+	return entry.preparation.then(
+		(preparedEnvironment) => {
+			if (preparedEnvironment === undefined) {
+				return releaseEnvironment(key, entry).then(() => undefined);
+			}
+
+			let released = false;
+			return {
+				containerBuildId: preparedEnvironment.containerBuildId,
+				containerEngine: preparedEnvironment.containerEngine,
+				release() {
+					if (released) {
+						return Promise.resolve();
+					}
+					released = true;
+					return releaseEnvironment(key, entry);
+				},
+			};
+		},
+		async (error: unknown) => {
+			await releaseEnvironment(key, entry);
+			throw error;
+		}
+	);
 }
 
 async function prepare(
 	config: Config,
 	configPath: string
-): Promise<ProjectContainerEnvironment | undefined> {
+): Promise<SharedProjectContainerEnvironment | undefined> {
 	const plan = createLocalContainerPlan({
 		containers: config.containers,
 		exports: config.exports,
@@ -92,6 +123,20 @@ async function prepare(
 		containerEngine: plan.containerEngine,
 		prepared,
 	};
+}
+
+async function releaseEnvironment(
+	key: string,
+	entry: EnvironmentEntry
+): Promise<void> {
+	entry.references--;
+	if (entry.references > 0 || environments.get(key) !== entry) {
+		return;
+	}
+
+	environments.delete(key);
+	const environment = await entry.preparation.catch(() => undefined);
+	await environment?.prepared?.dispose();
 }
 
 function configureManagedRegistry(
@@ -129,7 +174,9 @@ function configureManagedRegistry(
 
 /** Disposes all prepared environments after the final pool worker stops. */
 export async function disposeAllProjectContainers(): Promise<void> {
-	const pending = [...environments.values()];
+	const pending = [...environments.values()].map(
+		({ preparation }) => preparation
+	);
 	environments.clear();
 	const results = await Promise.allSettled(pending);
 	await Promise.all(

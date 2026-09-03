@@ -25,7 +25,9 @@ function fakeSessionData(dispose: () => Promise<void>): RemoteProxySessionData {
 
 // Bypasses the constructor's version check; socket/miniflare are undefined and
 // stop() exercises only shared-resource disposal.
-function createPoolWorker(): CloudflarePoolWorker {
+function createPoolWorker(
+	releaseContainerEnvironment?: () => Promise<void>
+): CloudflarePoolWorker {
 	const worker = Object.create(
 		CloudflarePoolWorker.prototype
 	) as CloudflarePoolWorker;
@@ -34,6 +36,10 @@ function createPoolWorker(): CloudflarePoolWorker {
 	});
 	Object.defineProperty(worker, "countedAsStarted", {
 		value: true,
+		writable: true,
+	});
+	Object.defineProperty(worker, "releaseContainerEnvironment", {
+		value: releaseContainerEnvironment,
 		writable: true,
 	});
 	return worker;
@@ -77,5 +83,18 @@ describe("remote proxy session disposal", () => {
 		await workerB.stop();
 		expect(dispose).toHaveBeenCalledTimes(1);
 		expect(remoteProxySessionsDataMap.has(configPath)).toBe(false);
+	});
+
+	it("releases a pool worker's container environment once", async ({
+		expect,
+	}) => {
+		const release = vi.fn(async () => {});
+		poolWorkerStarted();
+		const worker = createPoolWorker(release);
+
+		await worker.stop();
+		await worker.stop();
+
+		expect(release).toHaveBeenCalledOnce();
 	});
 });
