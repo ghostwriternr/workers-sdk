@@ -10,6 +10,7 @@ import workerdPath from "workerd";
 import { z } from "zod";
 import { SERVICE_LOOPBACK, SOCKET_ENTRY } from "../plugins";
 import { MiniflareCoreError } from "../shared";
+import { terminateRuntimeProcess } from "./shutdown";
 import { handleStructuredLogsFromStream } from "./structured-logs";
 import type { StructuredLogsHandler } from "./structured-logs";
 import type { Abortable } from "node:events";
@@ -48,7 +49,6 @@ export interface RuntimeOptions {
 	runtimeEnv?: Record<string, string>;
 	gracefulShutdown?: boolean;
 }
-
 async function waitForPorts(
 	stream: Readable,
 	options: Abortable & Pick<RuntimeOptions, "requiredSockets">
@@ -380,6 +380,8 @@ export class Runtime {
 		if (runtimeProcess === undefined) {
 			return;
 		}
+		const processExitPromise = this.#processExitPromise;
+		assert(processExitPromise !== undefined);
 
 		// Clear reference to prevent potential race conditions
 		this.#process = undefined;
@@ -397,31 +399,11 @@ export class Runtime {
 			controlPipe.destroy();
 		}
 
-		if (!this.#gracefulShutdown) {
-			// `kill()` uses `SIGTERM` by default. In `workerd`, this waits for HTTP
-			// connections to close before exiting. Notably, Chrome sometimes keeps
-			// connections open for about 10s, blocking exit. We'd like `dispose()`/
-			// `setOptions()` to immediately terminate the existing process.
-			// Therefore, use `SIGKILL` which force closes all connections.
-			// See https://github.com/cloudflare/workerd/pull/244.
-			runtimeProcess.kill("SIGKILL");
-			return this.#processExitPromise;
-		}
-
-		// Container cleanup is owned by workerd and requires a graceful shutdown while its
-		// Docker connection is still alive. Bound the wait so open HTTP connections cannot
-		// indefinitely block Miniflare disposal.
-		runtimeProcess.kill("SIGTERM");
-		const forceKillTimeout = setTimeout(
-			() => runtimeProcess.kill("SIGKILL"),
-			5_000
+		await terminateRuntimeProcess(
+			runtimeProcess,
+			processExitPromise,
+			this.#gracefulShutdown
 		);
-		forceKillTimeout.unref();
-		try {
-			await this.#processExitPromise;
-		} finally {
-			clearTimeout(forceKillTimeout);
-		}
 	}
 }
 

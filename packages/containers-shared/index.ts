@@ -9,3 +9,4 @@ export * from "./src/registry";
 export * from "./src/images";
 export * from "./src/dev-options";
 export * from "./src/local-containers";
+export * from "./src/managed-registry";

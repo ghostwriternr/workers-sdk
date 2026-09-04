@@ -1,0 +1,31 @@
+{
+	"name": "container-app-disabled",
+	"main": "src/index.ts",
+	// Keep the production container declaration while explicitly disabling its
+	// local runtime so this project does not require Docker.
+	"dev": {
+		"enable_containers": false,
+	},
+	"containers": [
+		{
+			"image": "./Dockerfile",
+			"class_name": "MyContainer",
+			"name": "container",
+			"max_instances": 2,
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "MyContainer",
+				"name": "MY_CONTAINER",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MyContainer"],
+		},
+	],
+}

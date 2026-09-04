@@ -1,20 +1,22 @@
 import {
-	configureOpenAPIForContainerPull,
 	createLocalContainerPlan,
 	prepareLocalContainers,
+	runWithCloudflareManagedRegistry,
 } from "@cloudflare/containers-shared";
 import { afterEach, describe, it, vi } from "vitest";
 import {
 	disposeAllProjectContainers,
+	disposeProjectContainersOnProcessExit,
 	prepareProjectContainers,
 } from "../src/pool/containers";
 import type { Config } from "@cloudflare/workers-utils";
 
 vi.mock("@cloudflare/containers-shared", () => ({
-	configureOpenAPIForContainerPull: vi.fn(),
 	createLocalContainerPlan: vi.fn(),
-	getCloudflareContainerRegistry: vi.fn(() => "registry.cloudflare.com"),
 	prepareLocalContainers: vi.fn(),
+	runWithCloudflareManagedRegistry: vi.fn(
+		(_options: unknown, operation: () => Promise<unknown>) => operation()
+	),
 }));
 
 const config = { dev: { enable_containers: true } } as Config;
@@ -56,6 +58,7 @@ describe("project container environments", () => {
 
 		expect(first?.containerBuildId).toBe(second?.containerBuildId);
 		expect(createLocalContainerPlan).toHaveBeenCalledOnce();
+		expect(runWithCloudflareManagedRegistry).toHaveBeenCalledOnce();
 		expect(prepareLocalContainers).toHaveBeenCalledOnce();
 
 		await first?.release();
@@ -194,45 +197,6 @@ describe("project container environments", () => {
 		await second?.release();
 	});
 
-	it("serializes managed-registry preparation", async ({ expect }) => {
-		vi.stubEnv("CLOUDFLARE_API_TOKEN", "token");
-		vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "account");
-		vi.mocked(createLocalContainerPlan).mockReturnValue({
-			containerBuildId: "build-id",
-			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
-			dockerPath: "docker",
-			containerOptions: [
-				{
-					class_name: "Container",
-					image_uri: "registry.cloudflare.com/image:latest",
-					image_tag: "cloudflare-dev/container:build-id",
-				},
-			],
-		});
-		let activePreparations = 0;
-		let maximumActivePreparations = 0;
-		vi.mocked(prepareLocalContainers).mockImplementation(async () => {
-			activePreparations++;
-			maximumActivePreparations = Math.max(
-				maximumActivePreparations,
-				activePreparations
-			);
-			await new Promise((resolve) => setTimeout(resolve, 0));
-			activePreparations--;
-			return { dockerPath: "docker", imageTags: new Set(), dispose: vi.fn() };
-		});
-
-		const [first, second] = await Promise.all([
-			prepareProjectContainers(config, "/project-a/wrangler.jsonc"),
-			prepareProjectContainers(config, "/project-b/wrangler.jsonc"),
-		]);
-
-		expect(maximumActivePreparations).toBe(1);
-		expect(configureOpenAPIForContainerPull).toHaveBeenCalledTimes(2);
-		await first?.release();
-		await second?.release();
-	});
-
 	it("retries after preparation fails", async ({ expect }) => {
 		vi.mocked(createLocalContainerPlan).mockReturnValue({
 			containerBuildId: "build-id",
@@ -255,5 +219,46 @@ describe("project container environments", () => {
 			prepareProjectContainers(config, "/project/wrangler.jsonc")
 		).resolves.toMatchObject({ containerBuildId: "build-id" });
 		expect(prepareLocalContainers).toHaveBeenCalledTimes(2);
+	});
+
+	it("cleans completed preparations during process exit", async ({
+		expect,
+	}) => {
+		const dispose = vi.fn();
+		vi.mocked(createLocalContainerPlan).mockReturnValue({
+			containerBuildId: "build-id",
+			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
+			dockerPath: "docker",
+			containerOptions: [],
+		});
+		vi.mocked(prepareLocalContainers).mockResolvedValue({
+			dockerPath: "docker",
+			imageTags: new Set(),
+			dispose,
+		});
+
+		await prepareProjectContainers(config, "/project/wrangler.jsonc");
+		disposeProjectContainersOnProcessExit();
+
+		expect(dispose).toHaveBeenCalledOnce();
+	});
+
+	it("aborts pending preparations during process exit", ({ expect }) => {
+		vi.mocked(createLocalContainerPlan).mockReturnValue({
+			containerBuildId: "build-id",
+			containerEngine: { localDocker: { socketPath: "/docker.sock" } },
+			dockerPath: "docker",
+			containerOptions: [],
+		});
+		let signal: AbortSignal | undefined;
+		vi.mocked(prepareLocalContainers).mockImplementation((options) => {
+			signal = options.signal;
+			return new Promise(() => {});
+		});
+
+		void prepareProjectContainers(config, "/project/wrangler.jsonc");
+		disposeProjectContainersOnProcessExit();
+
+		expect(signal?.aborted).toBe(true);
 	});
 });

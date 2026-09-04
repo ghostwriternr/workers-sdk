@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { disposeAllProjectContainers } from "./containers";
+import {
+	disposeAllProjectContainers,
+	disposeProjectContainersOnProcessExit,
+} from "./containers";
 import { cloudflarePool } from "./pool";
 import type { WorkersConfigPluginAPI, WorkersPoolOptions } from "./config";
 import type { ProvidedContext } from "vitest";
@@ -62,6 +65,60 @@ function ensureArrayExcludes<T>(array: T[], items: T[]) {
 const requiredConditions = ["workerd", "worker", "module", "browser"];
 const requiredMainFields = ["browser", "module", "jsnext:main", "jsnext"];
 const cleanupRegisteredFor = new WeakSet<Vitest>();
+
+interface ContainerInputHandler {
+	onChange(changedPath: string): void;
+	onDelete(changedPath: string): void;
+}
+
+const containerInputHandlersFor = new WeakMap<
+	Vitest,
+	Set<ContainerInputHandler>
+>();
+const containerInputHandlersRegisteredFor = new WeakSet<
+	VitestPluginContext["project"]
+>();
+let processExitCleanupRegistered = false;
+
+function registerContainerInputHandlers(
+	project: VitestPluginContext["project"],
+	onChange: (changedPath: string) => void,
+	onDelete: (changedPath: string) => void
+): void {
+	if (containerInputHandlersRegisteredFor.has(project)) {
+		return;
+	}
+	containerInputHandlersRegisteredFor.add(project);
+	const { vitest } = project;
+	let handlers = containerInputHandlersFor.get(vitest);
+	if (handlers === undefined) {
+		const registeredHandlers = new Set<ContainerInputHandler>();
+		handlers = registeredHandlers;
+		containerInputHandlersFor.set(vitest, registeredHandlers);
+		const dispatchChange = (changedPath: string): void => {
+			for (const handler of registeredHandlers) {
+				handler.onChange(changedPath);
+			}
+		};
+		const dispatchDelete = (changedPath: string): void => {
+			for (const handler of registeredHandlers) {
+				handler.onDelete(changedPath);
+			}
+		};
+		vitest.vite.watcher.on("change", dispatchChange);
+		vitest.vite.watcher.on("add", dispatchChange);
+		vitest.vite.watcher.on("unlink", dispatchDelete);
+		vitest.onClose(() => {
+			vitest.vite.watcher.off("change", dispatchChange);
+			vitest.vite.watcher.off("add", dispatchChange);
+			vitest.vite.watcher.off("unlink", dispatchDelete);
+			containerInputHandlersFor.delete(vitest);
+		});
+	}
+
+	const handler = { onChange, onDelete };
+	handlers.add(handler);
+}
 
 export function cloudflareTest(
 	options:
@@ -153,24 +210,19 @@ export function cloudflareTest(
 		},
 		configureVitest(context: VitestPluginContext) {
 			project = context.project;
+			if (!processExitCleanupRegistered) {
+				process.once("exit", disposeProjectContainersOnProcessExit);
+				processExitCleanupRegistered = true;
+			}
 			if (!cleanupRegisteredFor.has(context.project.vitest)) {
 				cleanupRegisteredFor.add(context.project.vitest);
 				context.project.vitest.onClose(disposeAllProjectContainers);
 			}
-			context.project.vitest.vite.watcher.on("change", onContainerInputChange);
-			context.project.vitest.vite.watcher.on("add", onContainerInputChange);
-			context.project.vitest.vite.watcher.on("unlink", onContainerInputDelete);
-			context.project.vitest.onClose(() => {
-				context.project.vitest.vite.watcher.off(
-					"change",
-					onContainerInputChange
-				);
-				context.project.vitest.vite.watcher.off("add", onContainerInputChange);
-				context.project.vitest.vite.watcher.off(
-					"unlink",
-					onContainerInputDelete
-				);
-			});
+			registerContainerInputHandlers(
+				context.project,
+				onContainerInputChange,
+				onContainerInputDelete
+			);
 			context.project.config.poolRunner = cloudflarePool(options);
 			context.project.config.pool = "cloudflare-pool";
 			context.project.config.snapshotEnvironment = "cloudflare:snapshot";
